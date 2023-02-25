@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import datapane as dp
 from category_encoders import OneHotEncoder, WOEEncoder, LeaveOneOutEncoder
-from pandas.core.dtypes.common import is_string_dtype, is_numeric_dtype
+from pandas.core.dtypes.common import is_string_dtype
 from sklearn.base import BaseEstimator
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
@@ -18,6 +18,7 @@ from auto_categorical_features_transformer.common.utils import get_all_subgroups
     is_multiclass_label
 
 from auto_categorical_features_transformer.common.plot_utils import plot_combinations_eval_metric_graphs
+from auto_categorical_features_transformer.summary_table_builder import build_summary_table
 
 
 @dataclass
@@ -53,7 +54,6 @@ class CategoricalFeatureTransformationsEvaluator:
     def create_transformations_report(self, X: pd.DataFrame, y: pd.Series, return_rich_table: bool = True) \
             -> Optional[CategoricalTransformationResults]:
         candidate_columns_for_transformations = self._find_candidate_columns_for_transformations(X)
-
         if any(candidate_columns_for_transformations):
             logging.info(f'auto_categorical_features_transformer - detected candidate features for categorical '
                          f'transformation: {candidate_columns_for_transformations}')
@@ -61,33 +61,39 @@ class CategoricalFeatureTransformationsEvaluator:
             logging.info('auto_categorical_features_transformer - no candidate feasters were found, doing nothing')
             return None
 
-        combinations_of_columns_to_transform = get_all_subgroups(candidate_columns_for_transformations)
-
-        combinations_of_columns_to_transform_with_metric = []
-        for columns_to_transform in tqdm(combinations_of_columns_to_transform, desc='transformations evaluation'):
-            test_evaluation_results = self._train_and_evaluate_classifier(X, y, columns_to_transform)
-            combinations_of_columns_to_transform_with_metric.append({
-                'transformed_columns': str(list(columns_to_transform)),
-                **test_evaluation_results
-            })
-
+        evaluated_combinations_of_columns_to_transform = self._evaluate_transformation_combinations(
+            X, y, candidate_columns_for_transformations
+        )
         if self._verbose:
             metric_to_plot = self._requested_evaluation_metrics[0]
-            plot_combinations_eval_metric_graphs(combinations_of_columns_to_transform_with_metric, metric_to_plot)
+            plot_combinations_eval_metric_graphs(evaluated_combinations_of_columns_to_transform, metric_to_plot)
 
-        transformations_combination_results_df = pd.DataFrame(data=combinations_of_columns_to_transform_with_metric)
-        baseline_results = transformations_combination_results_df[
-            transformations_combination_results_df['transformed_columns'] == str([])
-        ]
-        assert baseline_results.shape[0] == 1, 'expected to find 1 row exactly'
-        baseline_evaluation_results = baseline_results.iloc[0]
+        results = self._build_results_object(
+            candidate_columns_for_transformations,
+            evaluated_combinations_of_columns_to_transform,
+            return_rich_table
+        )
+        return results
 
-        summary_table = self._create_summary_table(
-            transformations_combination_results_df, baseline_evaluation_results
+    def _build_results_object(
+            self,
+            candidate_columns_for_transformations,
+            evaluated_combinations_of_columns_to_transform,
+            return_rich_table: bool
+    ) -> CategoricalTransformationResults:
+        evaluated_combinations_of_columns_to_transform_df = pd.DataFrame(
+            data=evaluated_combinations_of_columns_to_transform
+        )
+
+        baseline_evaluation_results = self._extract_baseline_results(
+            evaluated_combinations_of_columns_to_transform_df
+        )
+        summary_table = build_summary_table(
+            evaluated_combinations_of_columns_to_transform_df, baseline_evaluation_results,
+            self._requested_evaluation_metrics, self._verbose
         )
         if return_rich_table:
             summary_table = dp.DataTable(summary_table)
-
         results = CategoricalTransformationResults(
             transformation_candidate_features=tuple(candidate_columns_for_transformations),
             baseline_evaluation_results=baseline_evaluation_results,
@@ -95,50 +101,25 @@ class CategoricalFeatureTransformationsEvaluator:
         )
         return results
 
-    def _create_summary_table(
-            self,
-            transformations_combination_results_df: pd.DataFrame,
-            baseline_evaluation_results: pd.Series
-    ) -> pd.DataFrame:
-        ordered_display_columns = ['transformed_columns']
-        for metric_name in self._requested_evaluation_metrics:
-            transformations_combination_results_df[f'{metric_name}_diff'] = self._build_metric_baseline_diff_display_column(
-                transformations_combination_results_df, metric_name, baseline_evaluation_results)
-
-            ordered_display_columns.extend((metric_name, f'{metric_name}_diff'))
-            if self._verbose:
-                ordered_display_columns.append(f'{metric_name}_std')
-
-        display_report_df = transformations_combination_results_df\
-            [ordered_display_columns].sort_values(by=self._requested_evaluation_metrics[0], ascending=False)
-        for col in list(display_report_df.columns):
-            if is_numeric_dtype(display_report_df[col]):
-                display_report_df[col] = display_report_df[col].round(3)
-
-        return display_report_df
-
     @staticmethod
-    def _build_metric_baseline_diff_display_column(
-            transformations_combination_results_df, metric_name, baseline_results_row
-    ):
-        def _to_diff_display_str(curr_row: pd.Series) -> str:
-            baseline_metric_value = baseline_results_row[metric_name]
-            curr_row_metric_value = curr_row[metric_name]
+    def _extract_baseline_results(evaluated_combinations_of_columns_to_transform_df):
+        baseline_results = evaluated_combinations_of_columns_to_transform_df[
+            evaluated_combinations_of_columns_to_transform_df['transformed_columns'] == str([])
+        ]
+        assert baseline_results.shape[0] == 1, 'expected to find 1 row exactly'
+        baseline_evaluation_results = baseline_results.iloc[0]
+        return baseline_evaluation_results
 
-            diff = curr_row_metric_value - baseline_metric_value
-            diff_rounded = round(diff, 3)
-            diff_percentage = (diff / baseline_metric_value) * 100
-            diff_percentage_rounded = round(diff_percentage, 1)
-
-            if diff_rounded > 0:
-                return f"(↑) {diff_rounded}/ [{diff_percentage_rounded}%]"
-            elif diff_rounded == 0:
-                return "(-) 0 [0%]"
-            else:
-                return f"(↓) {diff_rounded} [{diff_percentage_rounded}%]"
-
-        diff_display_column = transformations_combination_results_df.apply(_to_diff_display_str, axis=1)
-        return diff_display_column
+    def _evaluate_transformation_combinations(self, X, y, candidate_columns_for_transformations):
+        combinations_of_columns_to_transform = get_all_subgroups(candidate_columns_for_transformations)
+        evaluated_combinations_of_columns_to_transform = []
+        for columns_to_transform in tqdm(combinations_of_columns_to_transform, desc='transformations evaluation'):
+            test_evaluation_results = self._train_and_evaluate_classifier(X, y, columns_to_transform)
+            evaluated_combinations_of_columns_to_transform.append({
+                'transformed_columns': str(list(columns_to_transform)),
+                **test_evaluation_results
+            })
+        return evaluated_combinations_of_columns_to_transform
 
     def _train_and_evaluate_classifier(self, X: pd.DataFrame, y: pd.Series, columns_to_transform_comb: Collection[str]):
         scores_average_strategy = 'weighted' if is_multiclass_label(y) else 'binary'
@@ -152,7 +133,7 @@ class CategoricalFeatureTransformationsEvaluator:
 
         eval_metric_to_fold_test_values = defaultdict(list)
         for X_train, X_test, y_train, y_test in kfold_dataset_split(X, y):
-            X_train_transformed_df, X_test_transformed_df = self._apply_categorical_transformation_on_columns(
+            X_train_transformed_df, X_test_transformed_df = self._apply_categorical_transformation_on_features(
                 X_train, X_test, y_train, columns_to_transform_comb)
             X_train_final_df, X_test_final_df = self._dataset_basic_preprocessing(
                 X_train_transformed_df, X_test_transformed_df)
@@ -181,7 +162,7 @@ class CategoricalFeatureTransformationsEvaluator:
             f'the following evaluation metrics are not supported yet - {not_supported_user_defined_eval_metrics}. ' \
             f'the metrics that are currently supported are: {list(supported_eval_metrics)}'
 
-    def _apply_categorical_transformation_on_columns(
+    def _apply_categorical_transformation_on_features(
             self, X_train: pd.DataFrame, X_test: pd.DataFrame,
             y_train: pd.Series, features_to_transform: Collection[str]
     ):

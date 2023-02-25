@@ -6,13 +6,13 @@ from matplotlib.patches import Patch
 
 
 def plot_combinations_eval_metric_graphs(
-        combinations_of_columns_to_transform_with_metric, metric_to_plot: str
+        evaluated_combinations_of_columns_to_transform, metric_to_plot: str
 ) -> NoReturn:
     combinations_metric_values = [
-        comb_res[metric_to_plot] for comb_res in combinations_of_columns_to_transform_with_metric
+        comb_res[metric_to_plot] for comb_res in evaluated_combinations_of_columns_to_transform
     ]
     baseline_metric_val = next(
-        comb_res[metric_to_plot] for comb_res in combinations_of_columns_to_transform_with_metric
+        comb_res[metric_to_plot] for comb_res in evaluated_combinations_of_columns_to_transform
         if comb_res['transformed_columns'] == str([])
     )
     assert baseline_metric_val is not None
