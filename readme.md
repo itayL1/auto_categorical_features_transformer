@@ -6,4 +6,9 @@ There are 2 main parts in this project:
   - The tutorial.ipynb includes an example for basic usage in the API
   - The experiment_notebooks/ folder includes more advanced usages that were made for the report of the final project 
 
+# Getting Started
+- git clone this repo.
+- pip install -r /path/to/requirements.txt
+- run notebook
+
 ** Supported python version: this project was developed and tested on python 3.9.6.
